@@ -249,97 +249,477 @@ function wireExercises(lesson){
 }
 
 
-// ---------- AI tutor ----------
-function loadAiHistory(){
-  try{
-    const parsed = JSON.parse(localStorage.getItem(AI_STORAGE_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed.filter(m=>m && ['user','assistant'].includes(m.role) && typeof m.text==='string').slice(-AI_MAX_HISTORY) : [];
-  }catch(_){ return []; }
+// ---------- AI tutor with chat history ----------
+
+function createChatId() {
+  return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function saveAiHistory(history){
-  localStorage.setItem(AI_STORAGE_KEY, JSON.stringify(history.slice(-AI_MAX_HISTORY)));
+function createEmptyChat() {
+  const now = Date.now();
+
+  return {
+    id: createChatId(),
+    title: 'Новый чат',
+    createdAt: now,
+    updatedAt: now,
+    messages: []
+  };
 }
 
-function renderAI(){
-  const configured = AI_API_URL.startsWith('https://') && !AI_API_URL.includes('PASTE_YOUR');
+function loadAiChats() {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem(AI_STORAGE_KEY) || '[]'
+    );
+
+    if (Array.isArray(saved) && saved.length) {
+      return saved
+        .filter(chat => chat && typeof chat.id === 'string')
+        .map(chat => ({
+          id: chat.id,
+          title: chat.title || 'Новый чат',
+          createdAt: chat.createdAt || Date.now(),
+          updatedAt: chat.updatedAt || Date.now(),
+          messages: Array.isArray(chat.messages)
+            ? chat.messages.slice(-AI_MAX_HISTORY)
+            : []
+        }));
+    }
+  } catch (error) {
+    console.error('Ошибка загрузки чатов:', error);
+  }
+
+  const firstChat = createEmptyChat();
+  localStorage.setItem(AI_STORAGE_KEY, JSON.stringify([firstChat]));
+  localStorage.setItem(AI_ACTIVE_CHAT_KEY, firstChat.id);
+
+  return [firstChat];
+}
+
+function saveAiChats(chats) {
+  try {
+    localStorage.setItem(
+      AI_STORAGE_KEY,
+      JSON.stringify(chats)
+    );
+  } catch (error) {
+    console.error('Ошибка сохранения чатов:', error);
+  }
+}
+
+function getActiveChat(chats) {
+  let activeId = localStorage.getItem(AI_ACTIVE_CHAT_KEY);
+  let chat = chats.find(item => item.id === activeId);
+
+  if (!chat) {
+    chat = chats[0];
+
+    if (chat) {
+      localStorage.setItem(AI_ACTIVE_CHAT_KEY, chat.id);
+    }
+  }
+
+  return chat;
+}
+
+function makeChatTitle(message) {
+  const clean = String(message)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!clean) return 'Новый чат';
+
+  return clean.length > 34
+    ? `${clean.slice(0, 34)}…`
+    : clean;
+}
+
+function escapeAiHtml(text) {
+  return String(text)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function formatAiAnswer(text) {
+  return escapeAiHtml(text).replace(/\n/g, '<br>');
+}
+
+function renderAI() {
+  const configured =
+    AI_API_URL.startsWith('https://') &&
+    !AI_API_URL.includes('PASTE_YOUR');
+
+  let chats = loadAiChats();
+  let activeChat = getActiveChat(chats);
+
+  if (!activeChat) {
+    activeChat = createEmptyChat();
+    chats = [activeChat];
+    saveAiChats(chats);
+    localStorage.setItem(AI_ACTIVE_CHAT_KEY, activeChat.id);
+  }
+
   const html = `
     <div class="lesson-kicker">Персональный помощник</div>
     <h1 class="lesson-title">ИИ-преподаватель турецкого</h1>
-    <p class="lesson-subtitle">Задавайте вопросы по грамматике, просите проверить предложение, объяснить правило или составить упражнение.</p>
-    <section class="ai-shell glass">
-      <div class="ai-head">
-        <div><h2>Türkçe Öğretmeni</h2><p>Специализируется на турецкой грамматике и объясняет материал на русском языке.</p></div>
-        <div class="ai-status">${configured ? 'ИИ подключён' : 'Требуется настройка'}</div>
-      </div>
-      <div class="ai-suggestions">
-        <button class="ai-chip">Объясни гармонию гласных</button>
-        <button class="ai-chip">Проверь: Ben okula gidiyor</button>
-        <button class="ai-chip">Дай 5 заданий на падежи</button>
-        <button class="ai-chip">В чём разница var и yok?</button>
-      </div>
-      <div class="ai-messages" id="aiMessages" aria-live="polite"></div>
-      <div class="ai-compose">
-        <textarea id="aiInput" maxlength="1200" placeholder="Напишите вопрос по турецкому языку…"></textarea>
-        <button class="ai-send" id="aiSend" aria-label="Отправить">↑</button>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-        <div class="ai-note">Enter — отправить · Shift+Enter — новая строка. Не вводите личные или секретные данные.</div>
-        <button class="ai-clear" id="aiClear">Очистить чат</button>
-      </div>
-    </section>`;
+
+    <p class="lesson-subtitle">
+      Создавайте отдельные диалоги, возвращайтесь к прошлым вопросам
+      и продолжайте обучение с сохранённой историей.
+    </p>
+
+    <div class="ai-workspace">
+
+      <aside class="ai-history-panel glass">
+        <button id="aiNewChat" class="ai-new-chat" type="button">
+          <span>＋</span>
+          Новый чат
+        </button>
+
+        <div class="ai-history-title">История чатов</div>
+
+        <div id="aiChatList" class="ai-chat-list"></div>
+      </aside>
+
+      <section class="ai-shell glass">
+        <div class="ai-head">
+          <div>
+            <h2 id="aiCurrentTitle">Türkçe Öğretmeni</h2>
+            <p>
+              Специализируется на турецкой грамматике и объясняет
+              материал на русском языке.
+            </p>
+          </div>
+
+          <div class="ai-status">
+            ${configured ? 'ИИ подключён' : 'Требуется настройка'}
+          </div>
+        </div>
+
+        <div class="ai-suggestions">
+          <button class="ai-chip">Объясни гармонию гласных</button>
+          <button class="ai-chip">Проверь: Ben okula gidiyor</button>
+          <button class="ai-chip">Дай 5 заданий на падежи</button>
+          <button class="ai-chip">В чём разница var и yok?</button>
+        </div>
+
+        <div
+          class="ai-messages"
+          id="aiMessages"
+          aria-live="polite"
+        ></div>
+
+        <div class="ai-compose">
+          <textarea
+            id="aiInput"
+            maxlength="4000"
+            placeholder="Напишите вопрос по турецкому языку…"
+          ></textarea>
+
+          <button
+            class="ai-send"
+            id="aiSend"
+            aria-label="Отправить"
+            type="button"
+          >↑</button>
+        </div>
+
+        <div class="ai-note">
+          Enter — отправить · Shift+Enter — новая строка.
+          Не вводите личные или секретные данные.
+        </div>
+      </section>
+
+    </div>
+  `;
 
   const main = document.getElementById('main');
   main.innerHTML = `<div class="page active">${html}</div>`;
 
-  const box = document.getElementById('aiMessages');
+  const chatList = document.getElementById('aiChatList');
+  const messagesBox = document.getElementById('aiMessages');
   const input = document.getElementById('aiInput');
-  const send = document.getElementById('aiSend');
-  let history = loadAiHistory();
+  const sendButton = document.getElementById('aiSend');
+  const newChatButton = document.getElementById('aiNewChat');
+  const titleElement = document.getElementById('aiCurrentTitle');
+  const chips = document.querySelectorAll('.ai-chip');
 
-  function addBubble(text, role, temporary=false){
+  function saveCurrentState() {
+    activeChat.updatedAt = Date.now();
+    activeChat.messages =
+      activeChat.messages.slice(-AI_MAX_HISTORY);
+
+    chats.sort((a, b) => b.updatedAt - a.updatedAt);
+    saveAiChats(chats);
+  }
+
+  function renderChatList() {
+    chatList.innerHTML = '';
+
+    const sortedChats = [...chats].sort(
+      (a, b) => b.updatedAt - a.updatedAt
+    );
+
+    sortedChats.forEach(chat => {
+      const item = document.createElement('div');
+
+      item.className =
+        `ai-chat-item ${chat.id === activeChat.id ? 'active' : ''}`;
+
+      item.innerHTML = `
+        <button
+          class="ai-chat-open"
+          type="button"
+          title="${escapeAiHtml(chat.title)}"
+        >
+          <span class="ai-chat-icon">✦</span>
+          <span class="ai-chat-name">
+            ${escapeAiHtml(chat.title)}
+          </span>
+        </button>
+
+        <button
+          class="ai-chat-delete"
+          type="button"
+          aria-label="Удалить чат"
+          title="Удалить чат"
+        >×</button>
+      `;
+
+      item
+        .querySelector('.ai-chat-open')
+        .addEventListener('click', () => {
+          activeChat = chat;
+          localStorage.setItem(AI_ACTIVE_CHAT_KEY, chat.id);
+
+          renderChatList();
+          renderMessages();
+          input.focus();
+        });
+
+      item
+        .querySelector('.ai-chat-delete')
+        .addEventListener('click', event => {
+          event.stopPropagation();
+
+          const confirmed = confirm(
+            `Удалить чат «${chat.title}»?`
+          );
+
+          if (!confirmed) return;
+
+          chats = chats.filter(item => item.id !== chat.id);
+
+          if (!chats.length) {
+            chats = [createEmptyChat()];
+          }
+
+          if (activeChat.id === chat.id) {
+            activeChat = chats[0];
+            localStorage.setItem(
+              AI_ACTIVE_CHAT_KEY,
+              activeChat.id
+            );
+          }
+
+          saveAiChats(chats);
+          renderChatList();
+          renderMessages();
+        });
+
+      chatList.appendChild(item);
+    });
+  }
+
+  function addBubble(text, role, temporary = false) {
     const row = document.createElement('div');
     row.className = `ai-row ${role === 'user' ? 'user' : 'bot'}`;
-    if(role === 'error') row.className = 'ai-row error bot';
-    if(role !== 'user'){
-      const avatar = document.createElement('div'); avatar.className='ai-avatar'; avatar.textContent='✦'; row.appendChild(avatar);
+
+    const bubble = document.createElement('div');
+    bubble.className = 'ai-bubble';
+
+    if (temporary) {
+      bubble.innerHTML = `
+        <span class="ai-typing">
+          <i></i><i></i><i></i>
+        </span>
+      `;
+    } else if (role === 'assistant') {
+      bubble.innerHTML = formatAiAnswer(text);
+    } else {
+      bubble.textContent = text;
     }
-    const bubble = document.createElement('div'); bubble.className='ai-bubble';
-    if(temporary) bubble.innerHTML='<span class="ai-typing"><i></i><i></i><i></i></span>';
-    else bubble.textContent=text;
-    row.appendChild(bubble); box.appendChild(row); box.scrollTop=box.scrollHeight;
-    return {row,bubble};
+
+    if (role !== 'user') {
+      const avatar = document.createElement('div');
+      avatar.className = 'ai-avatar';
+      avatar.textContent = '✦';
+      row.appendChild(avatar);
+    }
+
+    row.appendChild(bubble);
+    messagesBox.appendChild(row);
+    messagesBox.scrollTop = messagesBox.scrollHeight;
+
+    return { row, bubble };
   }
 
-  if(history.length){ history.forEach(m=>addBubble(m.text,m.role)); }
-  else addBubble('Merhaba! Я помогу разобраться в турецкой грамматике. Например, спросите: «Почему в okulda используется -da?»','assistant');
+  function renderMessages() {
+    messagesBox.innerHTML = '';
+    titleElement.textContent =
+      activeChat.title === 'Новый чат'
+        ? 'Türkçe Öğretmeni'
+        : activeChat.title;
 
-  async function submit(){
-    const message=input.value.trim();
-    if(!message || send.disabled) return;
-    if(!configured){ addBubble('Сначала вставьте адрес Cloudflare Worker в переменную AI_API_URL в файле app.js.','error'); return; }
-    addBubble(message,'user');
-    history.push({role:'user',text:message}); saveAiHistory(history);
-    input.value=''; input.style.height='auto'; send.disabled=true;
-    const loading=addBubble('', 'assistant', true);
-    try{
-      const response=await fetch(AI_API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,history:history.slice(-AI_MAX_HISTORY)})});
-      const data=await response.json().catch(()=>({}));
-      if(!response.ok) throw new Error(data.error || `Ошибка ${response.status}`);
-      const answer=String(data.answer || 'Ответ не получен.');
-      loading.bubble.textContent=answer;
-      history.push({role:'assistant',text:answer}); saveAiHistory(history);
-    }catch(err){
-      loading.row.className='ai-row error bot';
-      loading.bubble.textContent=`Не удалось получить ответ: ${err.message}. Попробуйте позже.`;
-    }finally{ send.disabled=false; input.focus(); }
+    if (!activeChat.messages.length) {
+      addBubble(
+        'Merhaba! Я помогу разобраться в турецкой грамматике. ' +
+        'Можете попросить объяснить правило, проверить предложение ' +
+        'или создать упражнение.',
+        'assistant'
+      );
+
+      return;
+    }
+
+    activeChat.messages.forEach(message => {
+      addBubble(message.text, message.role);
+    });
+
+    messagesBox.scrollTop = messagesBox.scrollHeight;
   }
 
-  send.addEventListener('click',submit);
-  input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();submit();}});
-  input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,150)+'px';});
-  document.querySelectorAll('.ai-chip').forEach(btn=>btn.addEventListener('click',()=>{input.value=btn.textContent;input.focus();}));
-  document.getElementById('aiClear').addEventListener('click',()=>{history=[];localStorage.removeItem(AI_STORAGE_KEY);box.innerHTML='';addBubble('Чат очищен. Задайте новый вопрос по турецкому языку.','assistant');});
+  function createNewChat() {
+    const chat = createEmptyChat();
+
+    chats.unshift(chat);
+    activeChat = chat;
+
+    localStorage.setItem(AI_ACTIVE_CHAT_KEY, chat.id);
+    saveAiChats(chats);
+
+    renderChatList();
+    renderMessages();
+
+    input.value = '';
+    input.focus();
+  }
+
+  async function submit() {
+    const message = input.value.trim();
+
+    if (!message || sendButton.disabled) return;
+
+    if (!configured) {
+      addBubble(
+        'Сначала укажите адрес Cloudflare Worker в AI_API_URL.',
+        'assistant'
+      );
+      return;
+    }
+
+    const previousHistory =
+      activeChat.messages.slice(-AI_MAX_HISTORY);
+
+    activeChat.messages.push({
+      role: 'user',
+      text: message
+    });
+
+    if (
+      activeChat.title === 'Новый чат' &&
+      activeChat.messages.length === 1
+    ) {
+      activeChat.title = makeChatTitle(message);
+    }
+
+    activeChat.updatedAt = Date.now();
+
+    saveCurrentState();
+    renderChatList();
+
+    addBubble(message, 'user');
+
+    input.value = '';
+    input.style.height = 'auto';
+    sendButton.disabled = true;
+
+    const loading = addBubble('', 'assistant', true);
+
+    try {
+      const response = await fetch(AI_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message,
+          history: previousHistory
+        })
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok || !data.ok) {
+        throw new Error(
+          data.error || `Ошибка ${response.status}`
+        );
+      }
+
+      const answer = String(
+        data.answer || 'Ответ не получен.'
+      );
+
+      loading.bubble.innerHTML = formatAiAnswer(answer);
+
+      activeChat.messages.push({
+        role: 'assistant',
+        text: answer
+      });
+
+      activeChat.updatedAt = Date.now();
+      saveCurrentState();
+      renderChatList();
+    } catch (error) {
+      loading.row.className = 'ai-row error bot';
+      loading.bubble.textContent =
+        `Не удалось получить ответ: ${error.message}`;
+    } finally {
+      sendButton.disabled = false;
+      input.focus();
+      messagesBox.scrollTop = messagesBox.scrollHeight;
+    }
+  }
+
+  newChatButton.addEventListener('click', createNewChat);
+  sendButton.addEventListener('click', submit);
+
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      submit();
+    }
+  });
+
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height =
+      `${Math.min(input.scrollHeight, 150)}px`;
+  });
+
+  chips.forEach(chip => {
+    chip.addEventListener('click', () => {
+      input.value = chip.textContent.trim();
+      input.focus();
+    });
+  });
+
+  renderChatList();
+  renderMessages();
 }
 
 // ---------- Router ----------
