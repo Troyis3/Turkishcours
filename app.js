@@ -7,7 +7,7 @@ const state = {
 // Вставьте сюда адрес вашего Cloudflare Worker после публикации.
 const AI_API_URL = 'https://turkish-ai-chat.akim03603.workers.dev';
 const AI_STORAGE_KEY = 'turkish-ai-chat-v1';
-const AI_MAX_HISTORY = 10;
+const AI_MAX_HISTORY = 20;
 
 const STAR_SVG = `<svg class="star-emblem" width="30" height="30" viewBox="0 0 40 40" fill="none">
   <path d="M20 2 L24 14 L36 14 L26 21 L30 34 L20 26 L10 34 L14 21 L4 14 L16 14 Z"
