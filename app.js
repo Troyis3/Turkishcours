@@ -6,7 +6,9 @@ const state = {
 
 // Вставьте сюда адрес вашего Cloudflare Worker после публикации.
 const AI_API_URL = 'https://turkish-ai-chat.akim03603.workers.dev';
-const AI_STORAGE_KEY = 'turkish-ai-chat-v1';
+const AI_STORAGE_KEY = 'turkish-ai-chats-v2';
+const AI_ACTIVE_CHAT_KEY = 'turkish-ai-active-chat-v2';
+const AI_LEGACY_STORAGE_KEY = 'turkish-ai-chat-v1';
 const AI_MAX_HISTORY = 20;
 
 const STAR_SVG = `<svg class="star-emblem" width="30" height="30" viewBox="0 0 40 40" fill="none">
@@ -274,17 +276,49 @@ function loadAiChats() {
     );
 
     if (Array.isArray(saved) && saved.length) {
-      return saved
+      const chats = saved
         .filter(chat => chat && typeof chat.id === 'string')
         .map(chat => ({
           id: chat.id,
           title: chat.title || 'Новый чат',
-          createdAt: chat.createdAt || Date.now(),
-          updatedAt: chat.updatedAt || Date.now(),
+          createdAt: Number(chat.createdAt) || Date.now(),
+          updatedAt: Number(chat.updatedAt) || Date.now(),
           messages: Array.isArray(chat.messages)
-            ? chat.messages.slice(-AI_MAX_HISTORY)
+            ? chat.messages
+                .filter(message => message && typeof message.text === 'string')
+                .map(message => ({
+                  role: message.role === 'assistant' ? 'assistant' : 'user',
+                  text: message.text
+                }))
+                .slice(-AI_MAX_HISTORY)
             : []
         }));
+
+      if (chats.length) return chats;
+    }
+
+    // Однократный перенос старой истории из версии с одним чатом.
+    const legacy = JSON.parse(
+      localStorage.getItem(AI_LEGACY_STORAGE_KEY) || '[]'
+    );
+
+    if (
+      Array.isArray(legacy) &&
+      legacy.some(message => message && typeof message.text === 'string')
+    ) {
+      const migrated = createEmptyChat();
+      migrated.title = 'Старый чат';
+      migrated.messages = legacy
+        .filter(message => message && typeof message.text === 'string')
+        .map(message => ({
+          role: message.role === 'assistant' ? 'assistant' : 'user',
+          text: message.text
+        }))
+        .slice(-AI_MAX_HISTORY);
+
+      localStorage.setItem(AI_STORAGE_KEY, JSON.stringify([migrated]));
+      localStorage.setItem(AI_ACTIVE_CHAT_KEY, migrated.id);
+      return [migrated];
     }
   } catch (error) {
     console.error('Ошибка загрузки чатов:', error);
