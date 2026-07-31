@@ -4,6 +4,11 @@ const state = {
   done: new Set(), // completed lesson ids (in-memory only, resets per session)
 };
 
+// Вставьте сюда адрес вашего Cloudflare Worker после публикации.
+const AI_API_URL = 'https://turkish-ai-chat.akim03603.workers.dev';
+const AI_STORAGE_KEY = 'turkish-ai-chat-v1';
+const AI_MAX_HISTORY = 10;
+
 const STAR_SVG = `<svg class="star-emblem" width="30" height="30" viewBox="0 0 40 40" fill="none">
   <path d="M20 2 L24 14 L36 14 L26 21 L30 34 L20 26 L10 34 L14 21 L4 14 L16 14 Z"
     fill="none" stroke="currentColor" stroke-width="1.4"/>
@@ -25,6 +30,9 @@ function renderSidebar(){
     </div>
     <div class="nav-item ${state.current==='home'?'active':''}" data-page="home">
       <div class="nav-num">⌂</div><div class="nav-label">Главная</div>
+    </div>
+    <div class="nav-item ${state.current==='ai'?'active':''}" data-page="ai">
+      <div class="nav-num">✦</div><div class="nav-label">ИИ-преподаватель</div>
     </div>
   `;
   LEVELS.forEach(level=>{
@@ -240,6 +248,100 @@ function wireExercises(lesson){
   });
 }
 
+
+// ---------- AI tutor ----------
+function loadAiHistory(){
+  try{
+    const parsed = JSON.parse(localStorage.getItem(AI_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.filter(m=>m && ['user','assistant'].includes(m.role) && typeof m.text==='string').slice(-AI_MAX_HISTORY) : [];
+  }catch(_){ return []; }
+}
+
+function saveAiHistory(history){
+  localStorage.setItem(AI_STORAGE_KEY, JSON.stringify(history.slice(-AI_MAX_HISTORY)));
+}
+
+function renderAI(){
+  const configured = AI_API_URL.startsWith('https://') && !AI_API_URL.includes('PASTE_YOUR');
+  const html = `
+    <div class="lesson-kicker">Персональный помощник</div>
+    <h1 class="lesson-title">ИИ-преподаватель турецкого</h1>
+    <p class="lesson-subtitle">Задавайте вопросы по грамматике, просите проверить предложение, объяснить правило или составить упражнение.</p>
+    <section class="ai-shell glass">
+      <div class="ai-head">
+        <div><h2>Türkçe Öğretmeni</h2><p>Специализируется на турецкой грамматике и объясняет материал на русском языке.</p></div>
+        <div class="ai-status">${configured ? 'ИИ подключён' : 'Требуется настройка'}</div>
+      </div>
+      <div class="ai-suggestions">
+        <button class="ai-chip">Объясни гармонию гласных</button>
+        <button class="ai-chip">Проверь: Ben okula gidiyor</button>
+        <button class="ai-chip">Дай 5 заданий на падежи</button>
+        <button class="ai-chip">В чём разница var и yok?</button>
+      </div>
+      <div class="ai-messages" id="aiMessages" aria-live="polite"></div>
+      <div class="ai-compose">
+        <textarea id="aiInput" maxlength="1200" placeholder="Напишите вопрос по турецкому языку…"></textarea>
+        <button class="ai-send" id="aiSend" aria-label="Отправить">↑</button>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+        <div class="ai-note">Enter — отправить · Shift+Enter — новая строка. Не вводите личные или секретные данные.</div>
+        <button class="ai-clear" id="aiClear">Очистить чат</button>
+      </div>
+    </section>`;
+
+  const main = document.getElementById('main');
+  main.innerHTML = `<div class="page active">${html}</div>`;
+
+  const box = document.getElementById('aiMessages');
+  const input = document.getElementById('aiInput');
+  const send = document.getElementById('aiSend');
+  let history = loadAiHistory();
+
+  function addBubble(text, role, temporary=false){
+    const row = document.createElement('div');
+    row.className = `ai-row ${role === 'user' ? 'user' : 'bot'}`;
+    if(role === 'error') row.className = 'ai-row error bot';
+    if(role !== 'user'){
+      const avatar = document.createElement('div'); avatar.className='ai-avatar'; avatar.textContent='✦'; row.appendChild(avatar);
+    }
+    const bubble = document.createElement('div'); bubble.className='ai-bubble';
+    if(temporary) bubble.innerHTML='<span class="ai-typing"><i></i><i></i><i></i></span>';
+    else bubble.textContent=text;
+    row.appendChild(bubble); box.appendChild(row); box.scrollTop=box.scrollHeight;
+    return {row,bubble};
+  }
+
+  if(history.length){ history.forEach(m=>addBubble(m.text,m.role)); }
+  else addBubble('Merhaba! Я помогу разобраться в турецкой грамматике. Например, спросите: «Почему в okulda используется -da?»','assistant');
+
+  async function submit(){
+    const message=input.value.trim();
+    if(!message || send.disabled) return;
+    if(!configured){ addBubble('Сначала вставьте адрес Cloudflare Worker в переменную AI_API_URL в файле app.js.','error'); return; }
+    addBubble(message,'user');
+    history.push({role:'user',text:message}); saveAiHistory(history);
+    input.value=''; input.style.height='auto'; send.disabled=true;
+    const loading=addBubble('', 'assistant', true);
+    try{
+      const response=await fetch(AI_API_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,history:history.slice(-AI_MAX_HISTORY)})});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok) throw new Error(data.error || `Ошибка ${response.status}`);
+      const answer=String(data.answer || 'Ответ не получен.');
+      loading.bubble.textContent=answer;
+      history.push({role:'assistant',text:answer}); saveAiHistory(history);
+    }catch(err){
+      loading.row.className='ai-row error bot';
+      loading.bubble.textContent=`Не удалось получить ответ: ${err.message}. Попробуйте позже.`;
+    }finally{ send.disabled=false; input.focus(); }
+  }
+
+  send.addEventListener('click',submit);
+  input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();submit();}});
+  input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,150)+'px';});
+  document.querySelectorAll('.ai-chip').forEach(btn=>btn.addEventListener('click',()=>{input.value=btn.textContent;input.focus();}));
+  document.getElementById('aiClear').addEventListener('click',()=>{history=[];localStorage.removeItem(AI_STORAGE_KEY);box.innerHTML='';addBubble('Чат очищен. Задайте новый вопрос по турецкому языку.','assistant');});
+}
+
 // ---------- Router ----------
 function navigate(page){
   state.current = page;
@@ -247,6 +349,8 @@ function navigate(page){
   renderSidebar();
   if(page === 'home'){
     renderHome();
+  } else if(page === 'ai'){
+    renderAI();
   } else if(page.startsWith('lesson-')){
     const id = parseInt(page.split('-')[1],10);
     const lesson = LESSONS.find(l=>l.id===id);
